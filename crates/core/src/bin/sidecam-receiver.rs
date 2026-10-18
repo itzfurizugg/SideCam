@@ -116,39 +116,31 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("[server] listen {}", addr);
 
-    if args.headless {
+    // ponytail: preview minifb buggy di Wayland; M1 headless by default.
+    // Pakai --preview untuk paksa buka jendela (butuh X11).
+    let want_preview = std::env::var("SIDECAM_PREVIEW").is_ok() || std::env::args().any(|a| a == "--preview");
+    if args.headless || !want_preview {
+        if !args.headless && !want_preview {
+            println!("(preview mati default — tambah --preview atau SIDECAM_PREVIEW=1 untuk jendela)");
+        }
         axum::serve(listener, app).await?;
         return Ok(());
     }
 
-    // Jalankan server + preview window bersamaan
-    // Preview: jendela minifb 640x360 placeholder, update 30fps, overlay stats
+    // Preview mode eksplisit (--preview)
     let server_handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             warn!("[server] error: {}", e);
         }
     });
 
-    // Preview window di thread blocking (minifb butuh main thread di beberapa OS)
-    // Untuk M1 di Linux headless, skip jika DISPLAY tidak ada
-    let has_display = std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
-    if !has_display {
-        info!("[preview] no DISPLAY, headless mode (server tetap jalan)");
-        server_handle.await?;
-        return Ok(());
-    }
-
-    // Stats shared
     let frames: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let start = std::time::Instant::now();
-
-    // Spawn blocking preview
     let frames2 = frames.clone();
     let preview = std::thread::spawn(move || {
         run_preview(frames2, start);
     });
 
-    // Ticker log stats tiap 5 detik
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         tokio::select! {
