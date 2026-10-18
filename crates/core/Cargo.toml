@@ -30,6 +30,10 @@ rustls = { workspace = true }
 
 qrcode = { workspace = true }
 mdns-sd = { workspace = true }
+sha2 = "0.10.8"
+subtle = "2.5.0"
+getrandom = "0.2"
+openh264 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

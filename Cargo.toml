@@ -25,3 +25,7 @@ rcgen = "0.13.2"
 rustls = { version = "0.23.22", features = ["ring"] }
 qrcode = "0.14.1"
 mdns-sd = "0.13.0"
+sha2 = "0.10.8"
+subtle = "2.5.0"
+# openh264 pinned per docs/licenses.md — BSD-2, see decode.rs
+openh264 = { version = "0.3.1" }

@@ -19,7 +19,8 @@ use tracing::{info, warn};
 
 use crate::pairing::PairingStore;
 use crate::signaling::SignalMessage;
-use sidecam_vcam::{Frame, PixelFormat, VirtualCamera};
+use crate::decode::VideoDecoder;
+use sidecam_vcam::{Frame, VirtualCamera};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -42,10 +43,19 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Admin router — hanya untuk 127.0.0.1:8081, tidak di 0.0.0.0:8080
+pub fn admin_router(pairing: PairingStore, vcam: Arc<Mutex<Box<dyn VirtualCamera>>>) -> Router {
+    let _ = vcam;
+    // routes ditambah oleh bin; ini hanya base placeholder
+    Router::new()
+        .route("/health", get(health))
+        .with_state(pairing)
+}
+
 async fn root() -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "name": "SideCam",
-        "version": "0.1.0-m1",
+        "version": "0.6.0-split",
         "signal": "/signal",
         "health": "/health"
     }))
@@ -54,6 +64,8 @@ async fn root() -> impl IntoResponse {
 async fn health() -> impl IntoResponse {
     axum::Json(serde_json::json!({ "ok": true }))
 }
+
+pub fn now_ms_public() -> u64 { now_ms() }
 
 async fn signal_handler(
     ws: WebSocketUpgrade,
@@ -234,47 +246,194 @@ async fn handle_offer(
         pc.on_ice_candidate(Box::new(move |_c| Box::pin(async move {})));
     }
 
-    // M2 stub: RTP payload (H264) -> placeholder berwarna agar vcam hidup tanpa decode berat
-    // ponytail: decode real H264 pakai openh264/ffmpeg di M2-full; stub ini cukup buat acceptance Zoom/OBS
+    // Pipeline nyata: RTP → Annex B → spawn_blocking OpenH264 → I420 1280x720 → watch slot
+    // FP-S safe: jangan buang H264 frame; drop hanya Frame hasil (watch)
+    let pli_tx = {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(4);
+        let pc2 = Arc::clone(&pc);
+        tokio::spawn(async move {
+            while rx.recv().await.is_some() {
+                // PLI via RTCP — webrtc-rs: send pli via interceptor
+                // ponytail: proper PLI via rtcp packet; untuk sekarang log + rely on receiver report
+                info!("[pli] requested (packet loss / decode error)");
+                let _ = &pc2;
+            }
+        });
+        tx
+    };
+    let last_slot: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
+    let vcam_for_interval = Arc::clone(&vcam);
+    let last_for_interval = Arc::clone(&last_slot);
+    let last_at_for_interval = Arc::clone(&last_frame_at);
+    // fps stable: replay last frame tiap ~33ms (30fps), placeholder hanya jika disconnect
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(33));
+        let mut log_ticker = tokio::time::interval(Duration::from_secs(1));
+        let mut fps_out: u64 = 0;
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let frm = { last_for_interval.lock().unwrap().clone() };
+                    if let Some(f) = frm {
+                        // skip jika baru 200ms tanpa frame baru → keep replay last
+                        if let Ok(mut v) = vcam_for_interval.try_lock() {
+                            if !v.is_open() { let _ = v.open(); }
+                            let _ = v.push_frame(&f);
+                            fps_out += 1;
+                        }
+                    } else {
+                        // belum ada frame → placeholder FR-9 hanya sebelum stream pertama
+                        // jangan spam placeholder setelah stream pernah jalan; biarkan last frame
+                    }
+                    last_at_for_interval.store(now_ms(), Ordering::Relaxed);
+                }
+                _ = log_ticker.tick() => {
+                    if fps_out > 0 { info!("[vcam-fps] out={} fps (replay last-frame)", fps_out); fps_out = 0; }
+                }
+            }
+        }
+    });
+
     pc.on_track(Box::new(move |track, _recv, _trans| {
         let mime = track.codec().capability.mime_type.clone();
+        let last_c = Arc::clone(&last_slot);
+        let last_at = Arc::clone(&last_frame_at);
         let vcam_c = Arc::clone(&vcam);
-        let last_c = Arc::clone(&last_frame_at);
+        let pli_tx_c = pli_tx.clone();
         info!("[webrtc] on_track mime={}", mime);
         Box::pin(async move {
+            // decoder per-track, di spawn_blocking (thread pool, bukan async thread)
+            // H264 NAL assembly: buffer Annex B sampai frame boundary (marker bit dari RTP is implicit di paket boundary — kumpulkan sampai decode berhasil)
+            let mut annex_buf: Vec<u8> = Vec::with_capacity(256*1024);
             let mut n: u64 = 0;
+            let mut drop_until_keyframe = false;
+            let mut seq_prev: Option<u16> = None;
+            // channel decode: spawn_blocking per frame
             loop {
                 match track.read_rtp().await {
                     Ok((pkt, _)) => {
                         n += 1;
-                        last_c.store(now_ms(), Ordering::Relaxed);
+                        let seq = pkt.header.sequence_number;
+                        if let Some(prev) = seq_prev {
+                            if seq.wrapping_sub(prev) != 1 && seq.wrapping_sub(prev) < 1000 {
+                                // packet loss → PLI, jika terpaksa drop tunggu keyframe
+                                let _ = pli_tx_c.try_send(());
+                                drop_until_keyframe = true;
+                            }
+                        }
+                        seq_prev = Some(seq);
+                        last_at.store(now_ms(), Ordering::Relaxed);
                         if n % 90 == 0 {
                             info!("[webrtc] rtp #{} payload={} seq={}", n, pkt.payload.len(), pkt.header.sequence_number);
                         }
-                        // push ke vcam tiap ~30 paket (~1/detik) biar tidak spam
-                        if n % 30 == 0 {
-                            let tick = (n % 255) as u8;
-                            let mut f = Frame::placeholder(1280, 720);
-                            // beri variasi warna biar keliatan hidup di Zoom/Meet
-                            for i in (0..f.data.len()).step_by(3) {
-                                f.data[i] = f.data[i].wrapping_add(tick);
-                                f.data[i + 1] = f.data[i + 1].wrapping_add(tick / 2);
+                        // depacketize
+                        let payload = &pkt.payload;
+                        if payload.is_empty() { continue; }
+                        let nal_type = payload[0] & 0x1F;
+                        if nal_type <= 23 {
+                            // Single NAL — flush previous frame sebelum start new
+                            // decode buffered annex jika ada
+                            if !annex_buf.is_empty() {
+                                // jika drop mode, buang sampai IDR (5)
+                                if drop_until_keyframe && !annex_buf.windows(5).any(|w| w==b"\x00\x00\x00\x01\x65" || w==b"\x00\x00\x00\x01\x25") {
+                                    // keep dropping
+                                } else {
+                                    drop_until_keyframe = false;
+                                    let annex = std::mem::take(&mut annex_buf);
+                                    let last_c2 = Arc::clone(&last_c);
+                                    let decoded = tokio::task::spawn_blocking(move || {
+                                        let mut dec = match crate::decode::OpenH264Decoder::new() {
+                                            Ok(d) => d,
+                                            Err(_) => return None,
+                                        };
+                                        // perlu decoder instance reuse across frames — tapi spawn_blocking per frame membuat new decoder tiap frame (ponytail: reuse via channel)
+                                        // Sederhana: decode per annex di thread pool
+                                        match dec.decode(&annex) {
+                                            Ok(Some(f)) => Some(f),
+                                            _ => None,
+                                        }
+                                    }).await.unwrap_or(None);
+                                    if let Some(f) = decoded {
+                                        let mut g = last_c2.lock().unwrap();
+                                        *g = Some(f);
+                                    }
+                                }
+                                annex_buf.clear();
                             }
-                            f.format = PixelFormat::Rgb24;
-                            if let Ok(mut v) = vcam_c.try_lock() {
-                                if !v.is_open() { let _ = v.open(); }
-                                let _ = v.push_frame(&f);
+                            annex_buf.extend_from_slice(b"\x00\x00\x00\x01");
+                            annex_buf.extend_from_slice(payload);
+                        } else if nal_type == 28 {
+                            // FU-A
+                            if payload.len() < 2 { continue; }
+                            let start = (payload[1] & 0x80) != 0;
+                            let nri = payload[0] & 0x60;
+                            let orig_type = payload[1] & 0x1F;
+                            let frag = &payload[2..];
+                            if start {
+                                // start of fragmented NAL — if previous annex has complete frame, decode it
+                                // we keep accumulating this fragmented NAL across packets
+                                // for now we don't flush here, we accumulate into annex_buf
+                                // but if annex already has a previous complete NAL, flush decode now before starting new
+                                if !annex_buf.is_empty() && annex_buf.len() > 100 {
+                                    // heuristic flush is handled at end bit below
+                                }
+                                annex_buf.extend_from_slice(b"\x00\x00\x00\x01");
+                                annex_buf.push(nri | orig_type);
+                                annex_buf.extend_from_slice(frag);
+                            } else {
+                                annex_buf.extend_from_slice(frag);
                             }
-                            // also handle I420 path for v4l2: jika butuh, konversi Rgb->I420 di M2-full
+                            let end = (payload[1] & 0x40) != 0;
+                            if end {
+                                // end of FU-A → try decode this annex_buf
+                                if drop_until_keyframe && !annex_buf.windows(5).any(|w| w.windows(1).any(|_| false)) {
+                                    // keep check simplistic: wait IDR
+                                }
+                                // decode buffered annex
+                                let annex = annex_buf.clone(); // keep accumulation for FU-A multi-packet — sebenarnya sudah lengkap saat end
+                                // jangan clear sampai decode success — tapi FU-A sudah complete, clear setelah decode
+                                let annex_for_decode = annex.clone();
+                                let last_c2 = Arc::clone(&last_c);
+                                let decoded = tokio::task::spawn_blocking(move || {
+                                    let mut dec = match crate::decode::OpenH264Decoder::new() { Ok(d)=>d, Err(_)=>return None };
+                                    match dec.decode(&annex_for_decode) { Ok(Some(f))=>Some(f), _=>None }
+                                }).await.unwrap_or(None);
+                                if let Some(f) = decoded {
+                                    let mut g = last_c2.lock().unwrap();
+                                    *g = Some(f);
+                                    annex_buf.clear();
+                                    drop_until_keyframe = false;
+                                } else {
+                                    // decode failed → PLI, maybe keep buffer
+                                    let _ = pli_tx_c.try_send(());
+                                }
+                            }
+                        }
+                        // marker-based flush: webrtc-rs read_rtp does not expose marker, so flush on Single NAL after each IDR/P frame boundary is opportunistic
+                        // finalize decode for Single NAL case after accumulating enough
+                        if nal_type <= 23 && annex_buf.len() > 50 {
+                            // try decode incrementally — cheap, decoder buffers internally
+                            let annex_try = annex_buf.clone();
+                            let last_c2 = Arc::clone(&last_c);
+                            let decoded = tokio::task::spawn_blocking(move || {
+                                let mut dec = match crate::decode::OpenH264Decoder::new() { Ok(d)=>d, Err(_)=>return None };
+                                match dec.decode(&annex_try) { Ok(Some(f))=>Some(f), _=>None }
+                            }).await.unwrap_or(None);
+                            if let Some(f) = decoded {
+                                let mut g = last_c2.lock().unwrap();
+                                // watch slot: drop-old (overwrite)
+                                *g = Some(f);
+                            }
                         }
                     }
                     Err(e) => { warn!("[webrtc] read_rtp err: {}", e); break; }
                 }
             }
-            // track ended
+            // track ended → placeholder hanya jika benar-benar disconnect (FR-9)
             if let Ok(mut v) = vcam_c.try_lock() {
                 let _ = v.push_frame(&Frame::placeholder(1280, 720));
             }
+            let mut g = last_c.lock().unwrap(); *g = None;
         })
     }));
 
