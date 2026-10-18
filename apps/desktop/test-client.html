@@ -78,12 +78,21 @@ let startTime=0, frames=0;
 $('btnStart').onclick=async()=>{
   const host=$('host').value.trim(), port=$('port').value.trim(), token=$('token').value.trim();
   if(!host){ alert('Isi host (IP laptop dari terminal receiver)'); return; }
+  // Cek secure context — getUserMedia butuh https atau localhost
+  const isSecure = window.isSecureContext || location.hostname==='localhost' || location.hostname==='127.0.0.1';
+  if(!isSecure && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)){
+    log('BLOKIR: Chrome butuh HTTPS atau localhost untuk kamera. Solusi: buka http://localhost:'+port+'/ di laptop ini, atau pakai HP via Chrome flag chrome://flags/#unsafely-treat-insecure-origin-as-secure');
+    alert('Kamera diblokir di http://'+host+' (bukan localhost).\n\nSolusi M1:\n1) Tes di laptop: buka http://localhost:'+port+'/ lalu Mulai Kirim\n2) HP: buka chrome://flags → \"Insecure origins treated as secure\" → isi http://'+host+':'+port+' → Enable → Restart Chrome\n\nAtau pakai Firefox di HP (lebih longgar).');
+    $('btnStart').disabled=false;
+    return;
+  }
   const wsUrl=`ws://${host}:${port}/signal${token?`?token=${encodeURIComponent(token)}`:''}`;
-  log('WS -> '+wsUrl);
+  log('WS -> '+wsUrl+' secure='+isSecure);
   statusEl.textContent='Menghubungkan...';
   $('btnStart').disabled=true;
 
   try{
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('getUserMedia tidak tersedia — butuh HTTPS atau localhost (Chrome blok http://192.168.x.x)');
     const facing=$('facing').value;
     const res=$('res').value;
     const w=res==='1080p'?1920:1280, h=res==='1080p'?1080:720;
