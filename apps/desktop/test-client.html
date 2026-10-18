@@ -3,56 +3,317 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>SideCam M1 — Test Client</title>
+<title>SideCam</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;900&display=swap" rel="stylesheet">
 <style>
-  *{box-sizing:border-box;font-family:system-ui,sans-serif}
-  body{max-width:780px;margin:24px auto;padding:0 16px;background:#0f1115;color:#e6e6e6}
-  h1{font-size:20px;margin:0 0 8px}
-  .card{background:#1a1d24;border:1px solid #2a2e39;border-radius:12px;padding:16px;margin:12px 0}
-  label{display:block;font-size:13px;opacity:.8;margin:8px 0 4px}
-  input,select,button{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #2a2e39;background:#111318;color:#e6e6e6}
-  button{cursor:pointer;background:#2d6bff;border:none;font-weight:600;margin-top:8px}
-  button.secondary{background:#2a2e39}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  video{width:100%;background:#000;border-radius:8px;aspect-ratio:16/9}
-  .row{display:flex;gap:8px}
-  .row>*{flex:1}
-  .log{font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;background:#0a0c10;border-radius:8px;padding:12px;max-height:220px;overflow:auto}
-  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#1e3a2e;color:#7ee0a0}
-  .badge.bad{background:#3a1e1e;color:#e07e7e}
-  small{opacity:.6}
+  :root{
+    --bg:#f7f8f5;
+    --surface:#ffffff;
+    --ink:#0e0f0c;
+    --mute:#6b6e66;
+    --line:#e3e6df;
+    --accent:#9fe870;
+    --accent-hover:#b4f08e;
+    --accent-ink:#163300;
+    --good:#2ead4b;
+    --bad:#d03238;
+    --warn:#d9a300;
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0e0f0c;
+      --surface:#171914;
+      --ink:#f2f4ef;
+      --mute:#9a9d95;
+      --line:#2a2d26;
+      --bad:#ff6b70;
+      color-scheme:dark;
+    }
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+    font-size:16px;
+    line-height:24px;
+  }
+  main{
+    max-width:440px;
+    margin:0 auto;
+    padding:24px 20px 48px;
+    display:flex;
+    flex-direction:column;
+    gap:24px;
+  }
+
+  /* header */
+  header{display:flex;align-items:center;justify-content:space-between}
+  .brand{font-size:20px;font-weight:900;letter-spacing:-.5px}
+  .status{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:14px;font-weight:500;color:var(--mute);
+  }
+  .status::before{
+    content:"";width:8px;height:8px;border-radius:50%;
+    background:var(--bad);
+  }
+  .status.ok{color:var(--ink)}
+  .status.ok::before{background:var(--good)}
+  .status.wait::before{background:var(--warn)}
+
+  /* preview */
+  .preview{display:flex;flex-direction:column;gap:8px}
+  video{
+    width:100%;
+    aspect-ratio:16/9;
+    display:block;
+    background:#000;
+    border-radius:16px;
+    object-fit:cover;
+  }
+  .stats{font-size:13px;line-height:20px;color:var(--mute);min-height:20px}
+
+  /* form */
+  .form{display:flex;flex-direction:column;gap:16px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field>span{font-size:13px;font-weight:500;color:var(--mute)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  input,select{
+    width:100%;
+    padding:10px 12px;
+    border-radius:12px;
+    border:1px solid var(--line);
+    background:var(--surface);
+    color:var(--ink);
+    font:inherit;
+    font-size:16px;
+    line-height:24px;
+  }
+  input::placeholder{color:var(--mute)}
+  input:focus-visible,select:focus-visible,summary:focus-visible,
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* buttons */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;
+    padding:12px 20px;
+    border-radius:999px;
+    border:1px solid transparent;
+    font:inherit;font-size:16px;font-weight:600;line-height:24px;
+    cursor:pointer;
+    text-decoration:none;
+    transition:background-color .15s ease,opacity .15s ease;
+  }
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn-primary{background:var(--accent);color:var(--accent-ink)}
+  .btn-primary:hover:not(:disabled){background:var(--accent-hover)}
+  .btn-ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+  .btn-ghost:hover:not(:disabled){border-color:var(--ink)}
+  .btn-sm{padding:6px 14px;font-size:14px;line-height:20px}
+  .actions{display:grid;grid-template-columns:1fr auto;gap:12px}
+
+  /* collapsible blocks */
+  details{border-top:1px solid var(--line);padding-top:16px}
+  summary{
+    cursor:pointer;list-style:none;
+    font-size:14px;font-weight:600;color:var(--ink);
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  summary::-webkit-details-marker{display:none}
+  summary::after{
+    content:"";width:8px;height:8px;
+    border-right:2px solid var(--mute);border-bottom:2px solid var(--mute);
+    transform:rotate(45deg);transition:transform .15s ease;margin-right:4px;
+  }
+  details[open]>summary::after{transform:rotate(-135deg)}
+  .details-body{display:flex;flex-direction:column;gap:16px;margin-top:16px}
+
+  .hint{font-size:13px;line-height:20px;color:var(--mute)}
+  .hint code{font-size:12px;word-break:break-all}
+
+  .log{
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12px;line-height:18px;
+    white-space:pre-wrap;word-break:break-word;
+    color:var(--mute);
+    max-height:200px;overflow:auto;
+  }
+
+  /* pairing (hanya tampil bila endpoint bisa diakses) */
+  .pairing{display:flex;flex-direction:column;gap:24px;border-top:1px solid var(--line);padding-top:24px}
+  .section-title{font-size:16px;font-weight:600;margin:0}
+  .section-note{font-size:13px;line-height:20px;color:var(--mute);margin:4px 0 0}
+  .qr{
+    margin-top:16px;
+    background:#fff;
+    border-radius:16px;
+    padding:16px;
+    display:flex;align-items:center;justify-content:center;
+    min-height:120px;
+  }
+  .qr svg{width:100%;max-width:220px;height:auto;display:block}
+  .qr-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .devices{margin-top:12px}
+  .dev{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:12px 0;border-bottom:1px solid var(--line);
+  }
+  .dev:last-child{border-bottom:none}
+  .dev strong{display:block;font-size:14px;line-height:20px;font-weight:600}
+  .dev small{font-size:12px;color:var(--mute)}
+  .empty{font-size:14px;color:var(--mute);margin:0}
+
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none!important}
+  }
 </style>
 </head>
 <body>
-<h1>SideCam M1 — Test Client</h1>
-<small>HP/browser kirim kamera → receiver Rust. Tidak perlu install. Buka di HP & laptop di Wi-Fi yang sama.</small>
+<main>
+  <header>
+    <span class="brand">SideCam</span>
+    <span id="status" class="status">Terputus</span>
+  </header>
 
-<div class="card">
-  <div class="row">
-    <div><label>Host</label><input id="host" placeholder="192.168.1.10"/></div>
-    <div><label>Port</label><input id="port" value="8080"/></div>
-  </div>
-  <label>Token (dari terminal receiver)</label><input id="token" placeholder="uuid token"/>
-  <div class="row">
-    <div><label>Kamera</label><select id="facing"><option value="user">Depan</option><option value="environment">Belakang</option></select></div>
-    <div><label>Resolusi</label><select id="res"><option value="720p">1280x720</option><option value="1080p">1920x1080</option></select></div>
-  </div>
-  <div class="row">
-    <button id="btnStart">Mulai Kirim</button>
-    <button id="btnStop" class="secondary" disabled>Stop</button>
-  </div>
-  <div style="margin-top:8px"><span id="status" class="badge bad">Belum tersambung</span> <small id="stats"></small></div>
-</div>
+  <section class="preview" aria-label="Pratinjau kamera">
+    <video id="local" autoplay playsinline muted></video>
+    <div class="stats" id="stats">Izinkan kamera untuk melihat pratinjau</div>
+  </section>
 
-<div class="card">
-  <label>Preview (kamera lokal)</label>
-  <video id="local" autoplay playsinline muted></video>
-  <small>Jika video muncul di sini, kamera HP aktif. Receiver Rust akan terima via WebRTC.</small>
-  <div class="log" id="log"></div>
-</div>
+  <section class="form" aria-label="Pengaturan kamera">
+    <div class="row">
+      <label class="field"><span>Kamera</span>
+        <select id="facing">
+          <option value="environment">Belakang</option>
+          <option value="user">Depan</option>
+        </select>
+      </label>
+      <label class="field"><span>Resolusi</span>
+        <select id="res">
+          <option value="720p">720p</option>
+          <option value="1080p">1080p</option>
+        </select>
+      </label>
+    </div>
+    <div class="actions">
+      <button id="btnStart" class="btn btn-primary">Mulai kirim</button>
+      <button id="btnStop" class="btn btn-ghost" disabled>Stop</button>
+    </div>
+    <p id="hint" class="hint" hidden></p>
+  </section>
+
+  <details id="conn" open>
+    <summary>Sambungan ke laptop</summary>
+    <div class="details-body">
+      <label class="field"><span>Alamat laptop</span>
+        <input id="host" placeholder="192.168.1.19" inputmode="decimal" autocomplete="off"/>
+      </label>
+      <div class="row">
+        <label class="field"><span>Port</span>
+          <input id="port" value="8080" inputmode="numeric" autocomplete="off"/>
+        </label>
+        <label class="field"><span>Token</span>
+          <input id="token" placeholder="dari laptop" autocomplete="off"/>
+        </label>
+      </div>
+      <button id="btnCopy" class="btn btn-ghost">Salin link untuk HP</button>
+    </div>
+  </details>
+
+  <section id="pairing" class="pairing" hidden>
+    <div>
+      <h2 class="section-title">Pairing</h2>
+      <p class="section-note">Scan QR dari HP. Token berlaku 2 menit dan hanya sekali pakai.</p>
+      <div id="qrbox" class="qr"></div>
+      <div class="qr-actions">
+        <button id="btnNewToken" class="btn btn-ghost btn-sm">Token baru</button>
+        <a id="qrDl" class="btn btn-ghost btn-sm" href="/qr.svg" target="_blank" rel="noopener">Buka QR</a>
+      </div>
+    </div>
+    <div>
+      <h2 class="section-title">Perangkat tepercaya</h2>
+      <p class="section-note">Cabut izin perangkat yang tidak lagi dipakai.</p>
+      <div id="devices" class="devices"></div>
+      <div class="qr-actions">
+        <button id="btnRefreshDevices" class="btn btn-ghost btn-sm">Muat ulang</button>
+      </div>
+    </div>
+  </section>
+
+  <details>
+    <summary>Log</summary>
+    <div class="details-body">
+      <div class="log" id="log" role="log" aria-live="off"></div>
+    </div>
+  </details>
+</main>
 
 <script>
-const $ = id=>document.getElementById(id);
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------- pairing & perangkat (hanya muncul bila endpoint bisa diakses) ---------- */
+(function(){
+  const box=$('qrbox'), pairing=$('pairing'), list=$('devices');
+  const showPairing=()=>{ pairing.hidden=false; };
+
+  if(window.SIDECAM_PAIRING){
+    try{
+      const p=window.SIDECAM_PAIRING;
+      if(p.token) $('token').value=p.token;
+      if(p.host) $('host').value=p.host;
+    }catch{}
+  }
+
+  if(window.SIDECAM_QR_SVG){
+    box.innerHTML=window.SIDECAM_QR_SVG;
+    showPairing();
+  }else{
+    fetch('/qr.svg')
+      .then(r=>r.ok?r.text():Promise.reject(new Error('qr '+r.status)))
+      .then(t=>{ if(t.includes('<svg')){ box.innerHTML=t; showPairing(); } })
+      .catch(()=>{});
+  }
+
+  async function loadDevices(){
+    try{
+      const r=await fetch('/api/devices');
+      if(!r.ok) return;
+      const j=await r.json();
+      showPairing();
+      if(!j.length){
+        list.innerHTML='<p class="empty">Belum ada perangkat tepercaya.</p>';
+        return;
+      }
+      list.innerHTML=j.map(d=>
+        `<div class="dev"><div><strong>${esc(d.name)}</strong><small>${esc(String(d.device_id).slice(0,8))}…</small></div>`+
+        `<button class="btn btn-ghost btn-sm" data-revoke="${esc(d.device_id)}">Cabut</button></div>`
+      ).join('');
+    }catch{}
+  }
+
+  list.addEventListener('click',async e=>{
+    const b=e.target.closest('[data-revoke]');
+    if(!b) return;
+    const id=b.getAttribute('data-revoke');
+    if(!confirm('Cabut perangkat '+id.slice(0,8)+'?')) return;
+    await fetch('/api/devices/'+encodeURIComponent(id),{method:'DELETE'});
+    loadDevices();
+  });
+
+  window.loadDevices=loadDevices;
+  $('btnRefreshDevices').onclick=loadDevices;
+  $('btnNewToken').onclick=()=>location.reload();
+  loadDevices();
+})();
+
+/* ---------- koneksi & streaming ---------- */
 const logEl=$('log'), statusEl=$('status'), statsEl=$('stats');
 function log(m){
   const t=new Date().toLocaleTimeString();
@@ -60,9 +321,11 @@ function log(m){
   logEl.scrollTop=logEl.scrollHeight;
   console.log(m);
 }
-function setStatus(ok,t){ statusEl.textContent=t; statusEl.className= ok?'badge':'badge bad'; }
+function setStatus(state,text){
+  statusEl.textContent=text;
+  statusEl.className='status'+(state==='ok'?' ok':state==='wait'?' wait':'');
+}
 
-// Isi host dari URL jika ada
 (function(){
   const h=location.hostname;
   if(h && h!=='localhost' && h!=='127.0.0.1') $('host').value=h;
@@ -70,97 +333,123 @@ function setStatus(ok,t){ statusEl.textContent=t; statusEl.className= ok?'badge'
   if(qs.get('token')) $('token').value=qs.get('token');
   if(qs.get('host')) $('host').value=qs.get('host');
   if(qs.get('port')) $('port').value=qs.get('port');
+  // sembunyikan form sambungan bila alamat dan token sudah terisi
+  if($('host').value && $('token').value) $('conn').open=false;
+  // petunjuk hanya muncul bila kamera diblokir oleh http
+  if(!window.isSecureContext){
+    const hint=$('hint');
+    hint.hidden=false;
+    hint.innerHTML='Kamera diblokir di http. Buka <code>https://'+esc($('host').value||'IP-laptop')+':'+esc($('port').value)+'</code> lalu pilih Advanced, Proceed.';
+  }
 })();
 
-let pc=null, ws=null, localStream=null;
-let startTime=0, frames=0;
+let pc=null,ws=null,localStream=null,startTime=0;
 
 $('btnStart').onclick=async()=>{
-  const host=$('host').value.trim(), port=$('port').value.trim(), token=$('token').value.trim();
-  if(!host){ alert('Isi host (IP laptop dari terminal receiver)'); return; }
-  // Cek secure context — getUserMedia butuh https atau localhost
-  const isSecure = window.isSecureContext || location.hostname==='localhost' || location.hostname==='127.0.0.1';
-  if(!isSecure && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)){
-    log('BLOKIR: Chrome butuh HTTPS atau localhost untuk kamera. Solusi: buka http://localhost:'+port+'/ di laptop ini, atau pakai HP via Chrome flag chrome://flags/#unsafely-treat-insecure-origin-as-secure');
-    alert('Kamera diblokir di http://'+host+' (bukan localhost).\n\nSolusi M1:\n1) Tes di laptop: buka http://localhost:'+port+'/ lalu Mulai Kirim\n2) HP: buka chrome://flags → \"Insecure origins treated as secure\" → isi http://'+host+':'+port+' → Enable → Restart Chrome\n\nAtau pakai Firefox di HP (lebih longgar).');
-    $('btnStart').disabled=false;
+  const host=$('host').value.trim(),port=$('port').value.trim(),token=$('token').value.trim();
+  if(!host){
+    $('conn').open=true;
+    $('host').focus();
     return;
   }
-  const wsUrl=`ws://${host}:${port}/signal${token?`?token=${encodeURIComponent(token)}`:''}`;
+  const isSecure=window.isSecureContext||location.hostname==='localhost'||location.hostname==='127.0.0.1';
+  if(!isSecure && (!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)){
+    log('BLOKIR SecureContext: Chrome butuh https/localhost. Pakai https://'+host+':'+port+' atau chrome://flags → Insecure origins = http://'+host+':'+port);
+    alert('Kamera diblokir di http://'+host+'\n\nBuka https://'+host+':'+port+' di HP → Advanced → Proceed\natau chrome://flags → Insecure origins treated as secure → http://'+host+':'+port);
+    return;
+  }
+  const wsScheme=location.protocol==='https:'?'wss://':'ws://';
+  const wsUrl=`${wsScheme}${host}:${port}/signal${token?`?token=${encodeURIComponent(token)}`:''}`;
   log('WS -> '+wsUrl+' secure='+isSecure);
-  statusEl.textContent='Menghubungkan...';
+  setStatus('wait','Menghubungkan…');
   $('btnStart').disabled=true;
-
   try{
-    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('getUserMedia tidak tersedia — butuh HTTPS atau localhost (Chrome blok http://192.168.x.x)');
-    const facing=$('facing').value;
-    const res=$('res').value;
-    const w=res==='1080p'?1920:1280, h=res==='1080p'?1080:720;
-    localStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:w},height:{ideal:h},frameRate:{ideal:30}},audio:false});
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('getUserMedia tidak tersedia — butuh https atau localhost');
+    const facing=$('facing').value,res=$('res').value,w=res==='1080p'?1920:1280,h=res==='1080p'?1080:720;
+    try{
+      localStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:w},height:{ideal:h},frameRate:{ideal:30}},audio:false});
+    }catch(e){
+      log('fallback tanpa constraint: '+e.message);
+      localStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false});
+    }
     $('local').srcObject=localStream;
-    log(`getUserMedia ok ${w}x${h} facing=${facing}`);
+    const vt=localStream.getVideoTracks()[0]; const s=vt&&vt.getSettings?vt.getSettings():{};
+    log(`getUserMedia ok ${s.width||w}x${s.height||h} facing=${facing} label=${vt?vt.label:''}`);
 
     ws=new WebSocket(wsUrl);
     ws.onopen=()=>{
       log('WS open');
-      ws.send(JSON.stringify({type:'hello', device_id:'browser-'+Math.random().toString(36).slice(2,7), name:navigator.userAgent.slice(0,40), app_version:'m1-browser'}));
-      if(token) ws.send(JSON.stringify({type:'auth', token}));
+      ws.send(JSON.stringify({type:'hello',device_id:'browser-'+Math.random().toString(36).slice(2,7),name:navigator.userAgent.slice(0,40),app_version:'m1-browser'}));
+      if(token) ws.send(JSON.stringify({type:'auth',token}));
       createPeer();
     };
-    ws.onmessage=async(e)=>{
+    ws.onmessage=async e=>{
       const msg=JSON.parse(e.data);
       log('WS <- '+e.data.slice(0,400));
       if(msg.type==='answer'){
-        await pc.setRemoteDescription({type:'answer', sdp:msg.sdp});
-        log('setRemoteDescription answer ok');
-        setStatus(true,'Tersambung');
-      } else if(msg.type==='ice' && msg.candidate){
-        try{ await pc.addIceCandidate({candidate:msg.candidate, sdpMid:msg.sdp_mid, sdpMLineIndex:msg.sdp_mline_index}); }catch(err){ log('addIce err '+err); }
-      } else if(msg.type==='authOk' || msg.type==='authok'){
+        await pc.setRemoteDescription({type:'answer',sdp:msg.sdp});
+        log('answer ok');
+        setStatus('ok','Tersambung');
+      }else if(msg.type==='ice'&&msg.candidate){
+        try{
+          await pc.addIceCandidate({candidate:msg.candidate,sdpMid:msg.sdp_mid,sdpMLineIndex:msg.sdp_mline_index});
+          log('addIce ok');
+        }catch(err){log('addIce err '+err);}
+      }else if(msg.type==='error'){
+        log('server error: '+(msg.message||JSON.stringify(msg)));
+        alert('Server: '+(msg.message||'error'));
+      }else if(msg.type==='authOk'||msg.type==='authok'){
         log('auth ok');
-      } else if(msg.type==='authErr' || msg.type==='autherr'){
-        log('auth gagal: '+(msg.reason||'')); alert('Token salah/kedaluwarsa');
+      }else if(msg.type==='authErr'||msg.type==='autherr'){
+        log('auth gagal');
+        alert('Token salah atau kedaluwarsa');
       }
     };
-    ws.onerror=e=>{ log('WS error'); setStatus(false,'WS error'); };
-    ws.onclose=()=>{ log('WS closed'); setStatus(false,'Terputus'); $('btnStart').disabled=false; $('btnStop').disabled=true; };
-
+    ws.onerror=()=>{log('WS error');setStatus('','Gagal tersambung');};
+    ws.onclose=()=>{
+      log('WS closed');
+      setStatus('','Terputus');
+      $('btnStart').disabled=false;
+      $('btnStop').disabled=true;
+    };
   }catch(e){
     log('Error: '+e.message);
-    alert('Gagal: '+e.message+'\nHP dan laptop harus di Wi-Fi yang sama, izinkan kamera.');
+    setStatus('','Terputus');
+    alert('Gagal: '+e.message);
     $('btnStart').disabled=false;
   }
 };
 
 async function createPeer(){
-  pc=new RTCPeerConnection({iceServers:[]}); // host only, LAN
+  pc=new RTCPeerConnection({iceServers:[]});
   pc.onicecandidate=e=>{
-    if(e.candidate && ws && ws.readyState===1){
-      ws.send(JSON.stringify({type:'ice', candidate:e.candidate.candidate, sdp_mid:e.candidate.sdpMid, sdp_mline_index:e.candidate.sdpMLineIndex}));
-    }
+    if(e.candidate&&ws&&ws.readyState===1)
+      ws.send(JSON.stringify({type:'ice',candidate:e.candidate.candidate,sdp_mid:e.candidate.sdpMid,sdp_mline_index:e.candidate.sdpMLineIndex}));
   };
   pc.onconnectionstatechange=()=>{
     log('PC state: '+pc.connectionState);
-    if(pc.connectionState==='connected'){ setStatus(true,'Tersambung — mengirim video'); startTime=performance.now(); requestAnimationFrame(tickStats); }
-    if(pc.connectionState==='failed' || pc.connectionState==='disconnected') setStatus(false, pc.connectionState);
+    if(pc.connectionState==='connected'){
+      setStatus('ok','Mengirim video');
+      startTime=performance.now();
+      requestAnimationFrame(tickStats);
+    }
+    if(pc.connectionState==='failed'||pc.connectionState==='disconnected') setStatus('',pc.connectionState==='failed'?'Koneksi gagal':'Terputus');
   };
-  localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
-  const offer=await pc.createOffer({offerToReceiveVideo:false, offerToReceiveAudio:false});
+  localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+  const offer=await pc.createOffer({offerToReceiveVideo:false,offerToReceiveAudio:false});
   await pc.setLocalDescription(offer);
   log('offer sdp len='+offer.sdp.length);
-  ws.send(JSON.stringify({type:'offer', sdp:offer.sdp, sdp_type:offer.type}));
+  ws.send(JSON.stringify({type:'offer',sdp:offer.sdp,sdp_type:offer.type}));
   $('btnStop').disabled=false;
 }
 
 function tickStats(){
-  if(!pc || pc.connectionState!=='connected') return;
+  if(!pc||pc.connectionState!=='connected') return;
   pc.getStats().then(stats=>{
     stats.forEach(r=>{
-      if(r.type==='outbound-rtp' && r.kind==='video'){
-        const fps=r.framesPerSecond||0;
-        const bw=(r.bytesSent||0);
-        const ms=performance.now()-startTime;
-        statsEl.textContent=` fps:${fps.toFixed(1)} bytes:${(bw/1024).toFixed(0)}KB elapsed:${(ms/1000).toFixed(1)}s`;
+      if(r.type==='outbound-rtp'&&r.kind==='video'){
+        const fps=r.framesPerSecond||0,bw=r.bytesSent||0,ms=performance.now()-startTime;
+        statsEl.textContent=`${fps.toFixed(0)} fps, ${(bw/1024).toFixed(0)} KB terkirim, ${(ms/1000).toFixed(0)} detik`;
       }
     });
   });
@@ -168,14 +457,29 @@ function tickStats(){
 }
 
 $('btnStop').onclick=()=>{
-  try{ if(ws) ws.close(); }catch{}
-  try{ if(pc) pc.close(); }catch{}
+  try{if(ws)ws.close();}catch{}
+  try{if(pc)pc.close();}catch{}
   if(localStream) localStream.getTracks().forEach(t=>t.stop());
   $('local').srcObject=null;
-  setStatus(false,'Stopped');
+  setStatus('','Dihentikan');
+  statsEl.textContent='Izinkan kamera untuk melihat pratinjau';
   $('btnStart').disabled=false;
   $('btnStop').disabled=true;
   log('stopped');
+};
+
+$('btnCopy').onclick=async()=>{
+  const host=$('host').value.trim()||location.hostname,port=$('port').value.trim()||'8080',token=$('token').value.trim();
+  const scheme=location.protocol==='https:'?'https':'http';
+  const url=`${scheme}://${host}:${port}/${token?`?token=${encodeURIComponent(token)}`:''}`;
+  try{
+    await navigator.clipboard.writeText(url);
+    log('Link disalin: '+url);
+    $('btnCopy').textContent='Tersalin';
+    setTimeout(()=>$('btnCopy').textContent='Salin link untuk HP',1500);
+  }catch{
+    prompt('Salin manual:',url);
+  }
 };
 </script>
 </body>

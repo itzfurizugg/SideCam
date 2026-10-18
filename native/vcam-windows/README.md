@@ -1,16 +1,18 @@
 # native/vcam-windows
 
-C++ DirectShow filter untuk virtual camera SideCam di Windows.
+C++ DirectShow source filter untuk SideCam (Windows).
 
-> M1: stub saja. Real implementasi di M2.
-
-## Rencana M2
-
-- Basis: cek lisensi **Softcam** / **UnityCapture** sebelum pakai.
-- Jika lisensi tidak cocok, tulis ulang minimal DirectShow source filter.
-- Export C ABI (`extern "C"`) untuk dipanggil `crates/vcam` via FFI.
-- Fase lanjut: `MFCreateVirtualCamera` untuk Windows 11.
+## Status M5
+- Stub FFI siap: `crates/vcam` `DirectShowCamera` panggil `sidecam_vcam_open/close/push_frame` via `LoadLibrary`.
+- Build real DLL butuh Windows + DirectShow SDK. Di Linux stub log saja.
+- Alternatif lisensi: Softcam/UnityCapture — cek sebelum pakai. Jika tidak cocok, tulis ulang minimal filter (PRD 12).
+- Fase lanjut: `MFCreateVirtualCamera` Windows 11.
 
 ## Trait mapping
+`crates/vcam::VirtualCamera` → `sidecam_vcam_*` exports.
 
-`crates/vcam::VirtualCamera` → `sidecam_vcam_open/close/push_frame` di DLL ini.
+## Build Windows
+```bat
+cl /LD vcam.cpp /I "%WindowsSdkDir%\Include" strmiids.lib
+regsvr32 sidecam_vcam.dll
+```

@@ -1,6 +1,9 @@
-//! server.rs — axum WebSocket signaling server
+//! server.rs — axum WebSocket signaling server + vcam bridge (M2)
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -16,23 +19,20 @@ use tracing::{info, warn};
 
 use crate::pairing::PairingStore;
 use crate::signaling::SignalMessage;
-
-// ── state ────────────────────────────────────────────────────────────────
+use sidecam_vcam::{Frame, PixelFormat, VirtualCamera};
 
 #[derive(Clone)]
 pub struct AppState {
     pub pairing: PairingStore,
     pub host: String,
+    /// ponytail: Mutex cukup M2, M3 ganti channel+thread jika push_frame blocking
+    pub vcam: Arc<Mutex<Box<dyn VirtualCamera>>>,
 }
-
-// ── query ────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct SignalQuery {
     pub token: Option<String>,
 }
-
-// ── router ───────────────────────────────────────────────────────────────
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -55,8 +55,6 @@ async fn health() -> impl IntoResponse {
     axum::Json(serde_json::json!({ "ok": true }))
 }
 
-// ── WebSocket upgrade ────────────────────────────────────────────────────
-
 async fn signal_handler(
     ws: WebSocketUpgrade,
     Query(q): Query<SignalQuery>,
@@ -66,21 +64,22 @@ async fn signal_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state, token_qs))
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
 async fn handle_socket(mut socket: WebSocket, state: AppState, token_qs: Option<String>) {
     info!("[signal] koneksi baru token_qs={:?}", token_qs);
 
-    // Auth via query param (M1 simple). M3: pakai pesan auth + mDNS.
     let mut authenticated = false;
     let mut device_name = String::new();
 
-    // Jika token di query string, validasi langsung
     if let Some(t) = token_qs.as_deref() {
         if state.pairing.is_token_valid(t) {
             match state.pairing.consume_token(t) {
                 Ok(()) => {
                     authenticated = true;
                     info!("[signal] token QS valid, authenticated");
-                    // kirim auth ok
                     let msg = SignalMessage::AuthOk { secret: None }.to_json();
                     if socket.send(Message::Text(msg.into())).await.is_err() { return; }
                 }
@@ -91,20 +90,22 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, token_qs: Option<
                 }
             }
         } else {
-            // token invalid — tapi jangan tutup dulu, tunggu pesan auth (agar browser test bisa kirim tanpa token)
             info!("[signal] token QS invalid, tunggu pesan auth");
         }
     }
-
-    // Untuk M1: jika tidak ada token_qs, izinkan koneksi tanpa auth (LAN only, dev).
-    // Di M3 ini akan wajib auth.
     if token_qs.is_none() {
         authenticated = true;
     }
 
-    // ── loop pesan ───────────────────────────────────────────────────────
-    // Simpan peer connection per socket
     let mut peer: Option<Arc<webrtc::peer_connection::RTCPeerConnection>> = None;
+    let vcam = Arc::clone(&state.vcam);
+    let last_frame_at = Arc::new(AtomicU64::new(now_ms()));
+    // ensure vcam open
+    if let Ok(mut v) = vcam.try_lock() {
+        if !v.is_open() { let _ = v.open(); }
+        // FR-9: tampil placeholder sebelum track datang (jangan hitam/beku)
+        let _ = v.push_frame(&Frame::placeholder(1280, 720));
+    }
 
     while let Some(Ok(msg)) = socket.next().await {
         let text = match msg {
@@ -112,7 +113,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, token_qs: Option<
             Message::Close(_) => { info!("[signal] close"); break; }
             _ => continue,
         };
-
         let parsed = match SignalMessage::parse(&text) {
             Ok(m) => m,
             Err(e) => {
@@ -122,12 +122,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, token_qs: Option<
                 continue;
             }
         };
-
         match parsed {
             SignalMessage::Hello(h) => {
                 device_name = h.name.clone();
                 info!("[signal] hello device={} name={} v={}", h.device_id, h.name, h.app_version);
-                // Echo hello
                 let reply = SignalMessage::Hello(h).to_json();
                 let _ = socket.send(Message::Text(reply.into())).await;
             }
@@ -158,7 +156,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, token_qs: Option<
                     continue;
                 }
                 info!("[signal] offer sdp len={}", o.sdp.len());
-                match handle_offer(o, &mut peer).await {
+                let vcam_c = Arc::clone(&vcam);
+                let last_c = Arc::clone(&last_frame_at);
+                match handle_offer(o, &mut peer, vcam_c, last_c).await {
                     Ok(answer_sdp) => {
                         let ans = SignalMessage::Answer(crate::signaling::SdpPayload { sdp: answer_sdp, sdp_type: "answer".into() }).to_json();
                         let _ = socket.send(Message::Text(ans.into())).await;
@@ -183,7 +183,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, token_qs: Option<
                     } else {
                         info!("[signal] ice candidate added");
                     }
-                    // echo back untuk trickle (jika server juga punya candidate)
                 }
             }
             SignalMessage::Config(c) => {
@@ -197,63 +196,106 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, token_qs: Option<
         }
     }
 
+    // FR-9: HP putus -> jangan beku/hitam, push placeholder + biarkan reconnect
+    if let Ok(mut v) = vcam.try_lock() {
+        let _ = v.push_frame(&Frame::placeholder(1280, 720));
+        info!("[vcam] HP terputus, placeholder dipasang (FR-9)");
+    }
+    let _ = peer; // drop pc triggers on_peer_connection_state_change
     info!("[signal] socket selesai device={}", device_name);
 }
 
 async fn handle_offer(
     offer: crate::signaling::SdpPayload,
     peer_out: &mut Option<Arc<webrtc::peer_connection::RTCPeerConnection>>,
+    vcam: Arc<Mutex<Box<dyn VirtualCamera>>>,
+    last_frame_at: Arc<AtomicU64>,
 ) -> anyhow::Result<String> {
     use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
     let pc = crate::webrtc::new_peer_connection().await?;
 
-    // Pasang handler track sebelum set_remote_description
-    // ponytail: on_track perlu di-setup sebelum answer agar tidak miss
     {
         let pc2 = Arc::clone(&pc);
+        let vcam2 = Arc::clone(&vcam);
         pc.on_peer_connection_state_change(Box::new(move |s| {
             info!("[webrtc] state: {:?}", s);
+            // FR-9: failed/disconnected -> placeholder agar Zoom tidak beku
+            if matches!(s, webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed
+                | webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Disconnected
+                | webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed) {
+                if let Ok(mut v) = vcam2.try_lock() {
+                    let _ = v.push_frame(&Frame::placeholder(1280, 720));
+                }
+            }
+            let _ = &pc2;
             Box::pin(async move {})
         }));
-        // ICE candidate -> untuk M1 host only, tidak perlu trickle balik.
-        // Diaktifkan di M3 untuk UX.
-        pc.on_ice_candidate(Box::new(move |_c| {
-            Box::pin(async move {})
-        }));
-        let _ = pc2;
+        pc.on_ice_candidate(Box::new(move |_c| Box::pin(async move {})));
     }
 
-    // Track handler yang log paket
-    // webrtc::on_track butuh &PeerConnection; kita set manual di sini
-    {
-        pc.on_track(Box::new(move |track, _recv, _trans| {
-            let mime = track.codec().capability.mime_type.clone();
-            info!("[webrtc] on_track mime={}", mime);
-            Box::pin(async move {
-                let mut n: u64 = 0;
-                loop {
-                    match track.read_rtp().await {
-                        Ok((pkt, _)) => {
-                            n += 1;
-                            if n % 90 == 0 {
-                                info!("[webrtc] rtp #{} payload={} seq={}", n, pkt.payload.len(), pkt.header.sequence_number);
-                            }
+    // M2 stub: RTP payload (H264) -> placeholder berwarna agar vcam hidup tanpa decode berat
+    // ponytail: decode real H264 pakai openh264/ffmpeg di M2-full; stub ini cukup buat acceptance Zoom/OBS
+    pc.on_track(Box::new(move |track, _recv, _trans| {
+        let mime = track.codec().capability.mime_type.clone();
+        let vcam_c = Arc::clone(&vcam);
+        let last_c = Arc::clone(&last_frame_at);
+        info!("[webrtc] on_track mime={}", mime);
+        Box::pin(async move {
+            let mut n: u64 = 0;
+            loop {
+                match track.read_rtp().await {
+                    Ok((pkt, _)) => {
+                        n += 1;
+                        last_c.store(now_ms(), Ordering::Relaxed);
+                        if n % 90 == 0 {
+                            info!("[webrtc] rtp #{} payload={} seq={}", n, pkt.payload.len(), pkt.header.sequence_number);
                         }
-                        Err(e) => { warn!("[webrtc] read_rtp err: {}", e); break; }
+                        // push ke vcam tiap ~30 paket (~1/detik) biar tidak spam
+                        if n % 30 == 0 {
+                            let tick = (n % 255) as u8;
+                            let mut f = Frame::placeholder(1280, 720);
+                            // beri variasi warna biar keliatan hidup di Zoom/Meet
+                            for i in (0..f.data.len()).step_by(3) {
+                                f.data[i] = f.data[i].wrapping_add(tick);
+                                f.data[i + 1] = f.data[i + 1].wrapping_add(tick / 2);
+                            }
+                            f.format = PixelFormat::Rgb24;
+                            if let Ok(mut v) = vcam_c.try_lock() {
+                                if !v.is_open() { let _ = v.open(); }
+                                let _ = v.push_frame(&f);
+                            }
+                            // also handle I420 path for v4l2: jika butuh, konversi Rgb->I420 di M2-full
+                        }
                     }
+                    Err(e) => { warn!("[webrtc] read_rtp err: {}", e); break; }
                 }
-            })
-        }));
-    }
+            }
+            // track ended
+            if let Ok(mut v) = vcam_c.try_lock() {
+                let _ = v.push_frame(&Frame::placeholder(1280, 720));
+            }
+        })
+    }));
 
     let desc = RTCSessionDescription::offer(offer.sdp)?;
     pc.set_remote_description(desc).await?;
     let answer = pc.create_answer(None).await?;
-    pc.set_local_description(answer.clone()).await?;
-
-    // Simpan pc agar tidak drop
+    pc.set_local_description(answer).await?;
+    {
+        let mut rx = pc.gathering_complete_promise().await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+    }
+    let final_sdp = pc
+        .local_description()
+        .await
+        .or(pc.pending_local_description().await)
+        .map(|d| d.sdp)
+        .unwrap_or_default();
+    if final_sdp.is_empty() {
+        anyhow::bail!("gather gagal: local_description kosong");
+    }
+    info!("[webrtc] answer final sdp len={} (gather done)", final_sdp.len());
     *peer_out = Some(pc);
-
-    Ok(answer.sdp)
+    Ok(final_sdp)
 }

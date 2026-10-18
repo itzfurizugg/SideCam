@@ -20,3 +20,8 @@ webrtc = "0.11.0"
 base64 = "0.22.1"
 clap = { version = "4.5.39", features = ["derive"] }
 minifb = "0.27.0"
+axum-server = { version = "0.7.1", features = ["tls-rustls"] }
+rcgen = "0.13.2"
+rustls = { version = "0.23.22", features = ["ring"] }
+qrcode = "0.14.1"
+mdns-sd = "0.13.0"

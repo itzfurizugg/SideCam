@@ -17,18 +17,48 @@ struct TokenEntry {
     used: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TrustedDevice {
     pub device_id: String,
     pub name: String,
     pub secret: String,
 }
 
-/// Store pairing — di-memory untuk M1, persist ke file di M3.
-/// ponytail: belum persist ke disk, upgrade di M3 pakai file JSON di %APPDATA%/SideCam/devices.json
-#[derive(Clone, Default)]
+fn persist_path() -> std::path::PathBuf {
+    let base = dirs_fallback();
+    base.join("sidecam_devices.json")
+}
+fn dirs_fallback() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("APPDATA") { std::path::PathBuf::from(home).join("SideCam") }
+    else if let Ok(home) = std::env::var("HOME") { std::path::PathBuf::from(home).join(".config/sidecam") }
+    else { std::path::PathBuf::from(".") }
+}
+fn save_devices(inner: &Inner) {
+    let path = persist_path();
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+    if let Ok(j) = serde_json::to_string_pretty(&inner.devices) {
+        let _ = std::fs::write(&path, j);
+    }
+}
+fn load_devices() -> HashMap<String, TrustedDevice> {
+    let path = persist_path();
+    std::fs::read_to_string(&path).ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Store pairing — M3 persist ke file.
+#[derive(Clone)]
 pub struct PairingStore {
     inner: Arc<Mutex<Inner>>,
+}
+impl Default for PairingStore {
+    fn default() -> Self {
+        let devices = load_devices();
+        let mut secrets = HashMap::new();
+        for dev in devices.values() { secrets.insert(dev.secret.clone(), dev.clone()); }
+        Self { inner: Arc::new(Mutex::new(Inner { tokens: HashMap::new(), secrets, devices })) }
+    }
 }
 
 #[derive(Default)]
@@ -83,6 +113,7 @@ impl PairingStore {
         let mut g = self.inner.lock().unwrap();
         g.secrets.insert(secret.clone(), dev.clone());
         g.devices.insert(device_id, dev);
+        save_devices(&g);
         secret
     }
 
@@ -98,6 +129,7 @@ impl PairingStore {
         let mut g = self.inner.lock().unwrap();
         if let Some(dev) = g.devices.remove(device_id) {
             g.secrets.remove(&dev.secret);
+            save_devices(&g);
             true
         } else { false }
     }
