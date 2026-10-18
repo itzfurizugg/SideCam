@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SideCam M1 — Test Client</title>
+<style>
+  *{box-sizing:border-box;font-family:system-ui,sans-serif}
+  body{max-width:780px;margin:24px auto;padding:0 16px;background:#0f1115;color:#e6e6e6}
+  h1{font-size:20px;margin:0 0 8px}
+  .card{background:#1a1d24;border:1px solid #2a2e39;border-radius:12px;padding:16px;margin:12px 0}
+  label{display:block;font-size:13px;opacity:.8;margin:8px 0 4px}
+  input,select,button{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #2a2e39;background:#111318;color:#e6e6e6}
+  button{cursor:pointer;background:#2d6bff;border:none;font-weight:600;margin-top:8px}
+  button.secondary{background:#2a2e39}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  video{width:100%;background:#000;border-radius:8px;aspect-ratio:16/9}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1}
+  .log{font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;background:#0a0c10;border-radius:8px;padding:12px;max-height:220px;overflow:auto}
+  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#1e3a2e;color:#7ee0a0}
+  .badge.bad{background:#3a1e1e;color:#e07e7e}
+  small{opacity:.6}
+</style>
+</head>
+<body>
+<h1>SideCam M1 — Test Client</h1>
+<small>HP/browser kirim kamera → receiver Rust. Tidak perlu install. Buka di HP & laptop di Wi-Fi yang sama.</small>
+
+<div class="card">
+  <div class="row">
+    <div><label>Host</label><input id="host" placeholder="192.168.1.10"/></div>
+    <div><label>Port</label><input id="port" value="8080"/></div>
+  </div>
+  <label>Token (dari terminal receiver)</label><input id="token" placeholder="uuid token"/>
+  <div class="row">
+    <div><label>Kamera</label><select id="facing"><option value="user">Depan</option><option value="environment">Belakang</option></select></div>
+    <div><label>Resolusi</label><select id="res"><option value="720p">1280x720</option><option value="1080p">1920x1080</option></select></div>
+  </div>
+  <div class="row">
+    <button id="btnStart">Mulai Kirim</button>
+    <button id="btnStop" class="secondary" disabled>Stop</button>
+  </div>
+  <div style="margin-top:8px"><span id="status" class="badge bad">Belum tersambung</span> <small id="stats"></small></div>
+</div>
+
+<div class="card">
+  <label>Preview (kamera lokal)</label>
+  <video id="local" autoplay playsinline muted></video>
+  <small>Jika video muncul di sini, kamera HP aktif. Receiver Rust akan terima via WebRTC.</small>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+const $ = id=>document.getElementById(id);
+const logEl=$('log'), statusEl=$('status'), statsEl=$('stats');
+function log(m){
+  const t=new Date().toLocaleTimeString();
+  logEl.textContent+=`[${t}] ${m}\n`;
+  logEl.scrollTop=logEl.scrollHeight;
+  console.log(m);
+}
+function setStatus(ok,t){ statusEl.textContent=t; statusEl.className= ok?'badge':'badge bad'; }
+
+// Isi host dari URL jika ada
+(function(){
+  const h=location.hostname;
+  if(h && h!=='localhost' && h!=='127.0.0.1') $('host').value=h;
+  const qs=new URLSearchParams(location.search);
+  if(qs.get('token')) $('token').value=qs.get('token');
+  if(qs.get('host')) $('host').value=qs.get('host');
+  if(qs.get('port')) $('port').value=qs.get('port');
+})();
+
+let pc=null, ws=null, localStream=null;
+let startTime=0, frames=0;
+
+$('btnStart').onclick=async()=>{
+  const host=$('host').value.trim(), port=$('port').value.trim(), token=$('token').value.trim();
+  if(!host){ alert('Isi host (IP laptop dari terminal receiver)'); return; }
+  const wsUrl=`ws://${host}:${port}/signal${token?`?token=${encodeURIComponent(token)}`:''}`;
+  log('WS -> '+wsUrl);
+  statusEl.textContent='Menghubungkan...';
+  $('btnStart').disabled=true;
+
+  try{
+    const facing=$('facing').value;
+    const res=$('res').value;
+    const w=res==='1080p'?1920:1280, h=res==='1080p'?1080:720;
+    localStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:w},height:{ideal:h},frameRate:{ideal:30}},audio:false});
+    $('local').srcObject=localStream;
+    log(`getUserMedia ok ${w}x${h} facing=${facing}`);
+
+    ws=new WebSocket(wsUrl);
+    ws.onopen=()=>{
+      log('WS open');
+      ws.send(JSON.stringify({type:'hello', device_id:'browser-'+Math.random().toString(36).slice(2,7), name:navigator.userAgent.slice(0,40), app_version:'m1-browser'}));
+      if(token) ws.send(JSON.stringify({type:'auth', token}));
+      createPeer();
+    };
+    ws.onmessage=async(e)=>{
+      const msg=JSON.parse(e.data);
+      log('WS <- '+e.data.slice(0,400));
+      if(msg.type==='answer'){
+        await pc.setRemoteDescription({type:'answer', sdp:msg.sdp});
+        log('setRemoteDescription answer ok');
+        setStatus(true,'Tersambung');
+      } else if(msg.type==='ice' && msg.candidate){
+        try{ await pc.addIceCandidate({candidate:msg.candidate, sdpMid:msg.sdp_mid, sdpMLineIndex:msg.sdp_mline_index}); }catch(err){ log('addIce err '+err); }
+      } else if(msg.type==='authOk' || msg.type==='authok'){
+        log('auth ok');
+      } else if(msg.type==='authErr' || msg.type==='autherr'){
+        log('auth gagal: '+(msg.reason||'')); alert('Token salah/kedaluwarsa');
+      }
+    };
+    ws.onerror=e=>{ log('WS error'); setStatus(false,'WS error'); };
+    ws.onclose=()=>{ log('WS closed'); setStatus(false,'Terputus'); $('btnStart').disabled=false; $('btnStop').disabled=true; };
+
+  }catch(e){
+    log('Error: '+e.message);
+    alert('Gagal: '+e.message+'\nHP dan laptop harus di Wi-Fi yang sama, izinkan kamera.');
+    $('btnStart').disabled=false;
+  }
+};
+
+async function createPeer(){
+  pc=new RTCPeerConnection({iceServers:[]}); // host only, LAN
+  pc.onicecandidate=e=>{
+    if(e.candidate && ws && ws.readyState===1){
+      ws.send(JSON.stringify({type:'ice', candidate:e.candidate.candidate, sdp_mid:e.candidate.sdpMid, sdp_mline_index:e.candidate.sdpMLineIndex}));
+    }
+  };
+  pc.onconnectionstatechange=()=>{
+    log('PC state: '+pc.connectionState);
+    if(pc.connectionState==='connected'){ setStatus(true,'Tersambung — mengirim video'); startTime=performance.now(); requestAnimationFrame(tickStats); }
+    if(pc.connectionState==='failed' || pc.connectionState==='disconnected') setStatus(false, pc.connectionState);
+  };
+  localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
+  const offer=await pc.createOffer({offerToReceiveVideo:false, offerToReceiveAudio:false});
+  await pc.setLocalDescription(offer);
+  log('offer sdp len='+offer.sdp.length);
+  ws.send(JSON.stringify({type:'offer', sdp:offer.sdp, sdp_type:offer.type}));
+  $('btnStop').disabled=false;
+}
+
+function tickStats(){
+  if(!pc || pc.connectionState!=='connected') return;
+  pc.getStats().then(stats=>{
+    stats.forEach(r=>{
+      if(r.type==='outbound-rtp' && r.kind==='video'){
+        const fps=r.framesPerSecond||0;
+        const bw=(r.bytesSent||0);
+        const ms=performance.now()-startTime;
+        statsEl.textContent=` fps:${fps.toFixed(1)} bytes:${(bw/1024).toFixed(0)}KB elapsed:${(ms/1000).toFixed(1)}s`;
+      }
+    });
+  });
+  setTimeout(()=>requestAnimationFrame(tickStats),1000);
+}
+
+$('btnStop').onclick=()=>{
+  try{ if(ws) ws.close(); }catch{}
+  try{ if(pc) pc.close(); }catch{}
+  if(localStream) localStream.getTracks().forEach(t=>t.stop());
+  $('local').srcObject=null;
+  setStatus(false,'Stopped');
+  $('btnStart').disabled=false;
+  $('btnStop').disabled=true;
+  log('stopped');
+};
+</script>
+</body>
+</html>

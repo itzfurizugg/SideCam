@@ -1,0 +1,11 @@
+[package]
+name = "sidecam-vcam"
+version = "0.1.0"
+edition = "2021"
+description = "Trait VirtualCamera + implementasi Linux/Windows/Placeholder"
+license = "MIT"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
